@@ -540,31 +540,19 @@ class PropertiesPanel(tk.Frame):
         fields = self._fields_for(comp)
         for row, (fname, val, unit, lo, hi, ftype) in enumerate(fields):
             tk.Label(self.inner, text=fname, bg='#ECF0F1',
-                     anchor='w').grid(row=row, column=0, sticky='w', pady=2)
-            if ftype == 'scale' and lo is not None and hi is not None:
-                var = tk.DoubleVar(value=val)
-                frame = tk.Frame(self.inner, bg='#ECF0F1')
-                frame.grid(row=row, column=1, columnspan=2, sticky='ew', pady=2)
-                lbl = tk.Label(frame, text=f"{val:.1f}", bg='#ECF0F1', width=6)
-                lbl.pack(side='right')
-                sc = tk.Scale(frame, variable=var, from_=lo, to=hi,
-                              orient='horizontal', resolution=(hi - lo) / 200,
-                              bg='#ECF0F1', showvalue=False, length=130,
-                              command=lambda v, l=lbl, u=unit: l.config(
-                                  text=f"{float(v):.1f}{u}"))
-                sc.pack(side='left', fill='x', expand=True)
-            elif ftype == 'entry':
+                     anchor='w').grid(row=row, column=0, sticky='w', pady=3)
+            # All fields use a plain text Entry (no sliders)
+            if ftype == 'entry':
                 var = tk.StringVar(value=str(val))
-                e = tk.Entry(self.inner, textvariable=var, width=12)
-                e.grid(row=row, column=1, sticky='ew', pady=2)
-                tk.Label(self.inner, text=unit, bg='#ECF0F1').grid(
-                    row=row, column=2, sticky='w')
             else:
-                var = tk.DoubleVar(value=val)
-                e = tk.Entry(self.inner, textvariable=var, width=10)
-                e.grid(row=row, column=1, sticky='ew', pady=2)
-                tk.Label(self.inner, text=unit, bg='#ECF0F1').grid(
-                    row=row, column=2, sticky='w')
+                # Numeric: show the value formatted to a sensible precision
+                fmt = ".0f" if (isinstance(val, float) and val >= 10) else ".4g"
+                var = tk.StringVar(value=format(val, fmt))
+            e = tk.Entry(self.inner, textvariable=var, width=14,
+                         relief='solid', bd=1, font=('Arial', 9))
+            e.grid(row=row, column=1, sticky='ew', pady=3, padx=(4, 0))
+            tk.Label(self.inner, text=unit, bg='#ECF0F1',
+                     font=('Arial', 9)).grid(row=row, column=2, sticky='w', padx=4)
             self._vars[fname] = (var, ftype)
 
         self.inner.columnconfigure(1, weight=1)
@@ -629,7 +617,7 @@ class PropertiesPanel(tk.Frame):
             return
         c = self._comp
         try:
-            vals = {k: (float(v.get()) if ft != 'entry' else v.get())
+            vals = {k: (v.get() if ft == 'entry' else float(v.get()))
                     for k, (v, ft) in self._vars.items()}
         except ValueError as exc:
             messagebox.showerror("Invalid input", str(exc))
@@ -1272,9 +1260,8 @@ class WaterFlowApp:
         upper.add(self.canvas_view, minsize=500)
 
         # Right side: branch selector + properties (narrower)
-        right = tk.Frame(upper, width=300)
-        right.pack_propagate(False)
-        upper.add(right, minsize=260)
+        right = tk.Frame(upper)
+        upper.add(right, minsize=240)
         self._build_right_panel(right)
 
         # Results table (bottom)
@@ -1285,7 +1272,9 @@ class WaterFlowApp:
         def _set_sash():
             try:
                 total_w = self.root.winfo_width()
-                upper.sash_place(0, max(700, total_w - 310), 0)
+                # Canvas takes 75 % of the window; right panel gets the remaining 25 %
+                sash_x = max(600, int(total_w * 0.75))
+                upper.sash_place(0, sash_x, 0)
             except Exception:
                 pass
         self.root.after(100, _set_sash)
