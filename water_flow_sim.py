@@ -773,12 +773,14 @@ class CanvasView(tk.Frame):
             is_sel0 = (self._sel_line is not None and
                        self._sel_line[0] is branch and
                        self._sel_line[1] == 0)
-            c.create_line(bus_left, by, cx, by,
-                          fill='#F39C12' if is_sel0 else '#2C3E50', width=2)
+            # Hit zone rectangle drawn FIRST so the visible line can be on top
             hit0 = c.create_rectangle(bus_left, by - 10, cx, by + 10,
-                                      fill='#FEF9E7' if is_sel0 else '#FDFEFE',
+                                      fill='#FEF9E7' if is_sel0 else '',
                                       outline='#F39C12' if is_sel0 else '')
             self._register_gap(hit0, branch, 0)
+            # Visible line drawn AFTER the rectangle — always shows on top
+            c.create_line(bus_left, by, cx, by,
+                          fill='#F39C12' if is_sel0 else '#2C3E50', width=2)
         # else: single-branch lead line is drawn in draw() — we register it separately
 
         for comp_idx, comp in enumerate(branch.comps):
@@ -798,7 +800,7 @@ class CanvasView(tk.Frame):
             # Highlight rectangle under the gap (drawn first so arrow is on top)
             hit = c.create_rectangle(gap_x1, by - COMP_H // 2,
                                      gap_x2, by + COMP_H // 2,
-                                     fill='#FEF9E7' if is_sel_gap else '#FDFEFE',
+                                     fill='#FEF9E7' if is_sel_gap else '',
                                      outline='#F39C12' if is_sel_gap else '')
             if is_sel_gap:
                 c.create_text(gap_x1 + COMP_GAP // 2, by - COMP_H // 2 - 7,
@@ -831,20 +833,22 @@ class CanvasView(tk.Frame):
                       self._sel_line[1] == insert_end)
 
         if has_siblings:
-            c.create_line(cx, by, bus_right, by,
-                          fill='#F39C12' if is_sel_end else '#2C3E50', width=2)
+            # Hit zone rectangle drawn FIRST, visible line on top
             hit_end = c.create_rectangle(cx, by - 10, bus_right, by + 10,
-                                         fill='#FEF9E7' if is_sel_end else '#FDFEFE',
+                                         fill='#FEF9E7' if is_sel_end else '',
                                          outline='#F39C12' if is_sel_end else '')
             self._register_gap(hit_end, branch, insert_end)
+            c.create_line(cx, by, bus_right, by,
+                          fill='#F39C12' if is_sel_end else '#2C3E50', width=2)
         else:
+            # Hit zone rectangle drawn FIRST, visible line on top
+            hit_end = c.create_rectangle(cx, by - 10, ret_x, by + 10,
+                                         fill='#FEF9E7' if is_sel_end else '',
+                                         outline='#F39C12' if is_sel_end else '')
+            self._register_gap(hit_end, branch, insert_end)
             c.create_line(cx, by, ret_x, by,
                           fill='#F39C12' if is_sel_end else '#2C3E50',
                           width=2, arrow='last')
-            hit_end = c.create_rectangle(cx, by - 10, ret_x, by + 10,
-                                         fill='#FEF9E7' if is_sel_end else '#FDFEFE',
-                                         outline='#F39C12' if is_sel_end else '')
-            self._register_gap(hit_end, branch, insert_end)
 
     def _draw_comp_box(self, x, y, w, h, comp, tag, selected):
         """Draw a single component box with post-sim overlay."""
