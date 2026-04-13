@@ -1,0 +1,9 @@
+# TATTOOS Water Flow Network Simulator - Python dependencies
+# Install with:  pip install -r requirements.txt
+
+# Core numerical library (used for any future matrix extensions)
+numpy>=1.24.0
+
+# tkinter is part of the Python standard library on most platforms.
+# On Debian/Ubuntu install it with:
+#   sudo apt-get install python3-tk
