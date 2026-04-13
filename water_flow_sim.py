@@ -316,7 +316,7 @@ class HydroNetwork:
 # Canvas geometry constants
 COMP_W  = 110   # component box width  (px)
 COMP_H  = 60    # component box height (px)
-COMP_GAP = 10   # horizontal gap between boxes
+COMP_GAP = 20   # horizontal gap between boxes (wider = easier to click)
 ROW_H   = 100   # vertical space per branch row
 PUMP_W  = 100
 PUMP_H  = 80
@@ -370,7 +370,7 @@ class PropertiesPanel(tk.Frame):
 
         if comp is None:
             tk.Label(self.inner,
-                     text="Click a component on the canvas\nto edit its properties.",
+                     text="Click a component or line\non the canvas to interact.",
                      bg='#ECF0F1', fg='#7F8C8D', justify='center').pack(pady=20)
             self.result_lbl.config(text="")
             return
@@ -411,6 +411,54 @@ class PropertiesPanel(tk.Frame):
     def refresh_results(self, comp):
         if comp is self._comp and comp is not None:
             self.result_lbl.config(text=comp.result_str())
+
+    def load_line_info(self, branch, insert_idx, on_insert):
+        """Show the insert-here panel when a line segment is selected."""
+        self._comp = None
+        self._vars.clear()
+        for w in self.inner.winfo_children():
+            w.destroy()
+
+        # Describe the insertion position
+        n = len(branch.comps)
+        if n == 0:
+            pos_text = f"Start of {branch.name} (empty)"
+        elif insert_idx == 0:
+            first = branch.comps[0].canvas_label().splitlines()[0]
+            pos_text = f"Before  '{first}'"
+        elif insert_idx >= n:
+            last = branch.comps[-1].canvas_label().splitlines()[0]
+            pos_text = f"After  '{last}'"
+        else:
+            a = branch.comps[insert_idx - 1].canvas_label().splitlines()[0]
+            b = branch.comps[insert_idx].canvas_label().splitlines()[0]
+            pos_text = f"Between '{a}'\nand '{b}'"
+
+        tk.Label(self.inner, text=f"✦ {branch.name}",
+                 bg='#ECF0F1', fg='#2C3E50',
+                 font=('Arial', 9, 'bold'), anchor='w').pack(fill='x', pady=(4, 0))
+        tk.Label(self.inner, text=pos_text,
+                 bg='#ECF0F1', fg='#5D6D7E',
+                 font=('Arial', 8), wraplength=190,
+                 justify='left', anchor='w').pack(fill='x', pady=(0, 8))
+
+        sep = tk.Frame(self.inner, bg='#BDC3C7', height=1)
+        sep.pack(fill='x', pady=(0, 6))
+
+        tk.Label(self.inner, text="Insert here:",
+                 bg='#ECF0F1', font=('Arial', 9, 'bold'), anchor='w').pack(fill='x')
+
+        btn_f = tk.Frame(self.inner, bg='#ECF0F1')
+        btn_f.pack(fill='x', pady=4)
+        bs = {'relief': 'flat', 'pady': 4, 'padx': 6, 'bd': 0, 'font': ('Arial', 8)}
+        tk.Button(btn_f, text="+ Pipe",   bg='#2980B9', fg='white',
+                  command=lambda: on_insert('pipe'),   **bs).pack(side='left', padx=2)
+        tk.Button(btn_f, text="+ Valve",  bg='#27AE60', fg='white',
+                  command=lambda: on_insert('valve'),  **bs).pack(side='left', padx=2)
+        tk.Button(btn_f, text="+ Device", bg='#D35400', fg='white',
+                  command=lambda: on_insert('device'), **bs).pack(side='left', padx=2)
+
+        self.result_lbl.config(text="")
 
     # ── internals ───────────────────────────────────────────────────────────
 
@@ -565,12 +613,15 @@ class ResultsPanel(tk.Frame):
 class CanvasView(tk.Frame):
     """Central canvas showing the schematic of the hydraulic network."""
 
-    def __init__(self, parent, on_select):
+    def __init__(self, parent, on_select, on_line_select=None):
         super().__init__(parent)
-        self.on_select = on_select      # callback(comp_or_None)
-        self._net   = None
-        self._sel   = None              # selected component uid
-        self._tag_map = {}              # canvas tag → component
+        self.on_select      = on_select       # callback(comp_or_None)
+        self.on_line_select = on_line_select or (lambda b, i: None)
+        self._net      = None
+        self._sel      = None              # selected component uid
+        self._sel_line = None             # (branch, insert_idx) or None
+        self._tag_map  = {}              # canvas tag → component
+        self._line_map = {}              # canvas item → (branch, insert_idx)
 
         # Canvas + scrollbars
         self.canvas = tk.Canvas(self, bg='#FDFEFE', cursor='arrow',
@@ -589,11 +640,13 @@ class CanvasView(tk.Frame):
 
     # ── public API ─────────────────────────────────────────────────────────
 
-    def draw(self, network, selected_comp=None):
+    def draw(self, network, selected_comp=None, selected_line=None):
         """Redraw the entire network schematic."""
         self._net = network
         self._sel = selected_comp.uid if selected_comp else None
+        self._sel_line = selected_line   # (branch, insert_idx) or None
         self._tag_map.clear()
+        self._line_map.clear()
         c = self.canvas
         c.delete('all')
 
@@ -715,25 +768,51 @@ class CanvasView(tk.Frame):
         c  = self.canvas
         cx = BRANCH_START_X
 
+        # ── Initial connection (before first component = insert pos 0) ───────
         if has_siblings:
-            # Tap from left bus to branch start
+            is_sel0 = (self._sel_line is not None and
+                       self._sel_line[0] is branch and
+                       self._sel_line[1] == 0)
             c.create_line(bus_left, by, cx, by,
-                          fill='#2C3E50', width=2)
-        # else: the single-branch horizontal line is drawn in draw()
+                          fill='#F39C12' if is_sel0 else '#2C3E50', width=2)
+            hit0 = c.create_rectangle(bus_left, by - 10, cx, by + 10,
+                                      fill='#FEF9E7' if is_sel0 else '#FDFEFE',
+                                      outline='#F39C12' if is_sel0 else '')
+            self._register_gap(hit0, branch, 0)
+        # else: single-branch lead line is drawn in draw() — we register it separately
 
-        for comp in branch.comps:
+        for comp_idx, comp in enumerate(branch.comps):
             selected = (comp.uid == self._sel)
             tag = f"comp_{comp.uid}"
             self._draw_comp_box(cx, by - COMP_H // 2, COMP_W, COMP_H,
                                 comp, tag, selected)
-            # Flow arrow between boxes
-            c.create_line(cx + COMP_W, by,
-                          cx + COMP_W + COMP_GAP, by,
-                          fill='#2C3E50', width=2, arrow='last')
+
+            # ── Gap after this component (insert pos = comp_idx + 1) ─────────
+            insert_pos = comp_idx + 1
+            gap_x1 = cx + COMP_W
+            gap_x2 = cx + COMP_W + COMP_GAP
+            is_sel_gap = (self._sel_line is not None and
+                          self._sel_line[0] is branch and
+                          self._sel_line[1] == insert_pos)
+
+            # Highlight rectangle under the gap (drawn first so arrow is on top)
+            hit = c.create_rectangle(gap_x1, by - COMP_H // 2,
+                                     gap_x2, by + COMP_H // 2,
+                                     fill='#FEF9E7' if is_sel_gap else '#FDFEFE',
+                                     outline='#F39C12' if is_sel_gap else '')
+            if is_sel_gap:
+                c.create_text(gap_x1 + COMP_GAP // 2, by - COMP_H // 2 - 7,
+                              text='✚ INSERT', fill='#F39C12',
+                              font=('Arial', 6, 'bold'))
+            self._register_gap(hit, branch, insert_pos)
+
+            # Arrow on top
+            c.create_line(gap_x1, by, gap_x2, by,
+                          fill='#F39C12' if is_sel_gap else '#2C3E50',
+                          width=2, arrow='last')
             cx += COMP_W + COMP_GAP
 
-        # ── Branch flow indicator badge ───────────────────────────────────
-        # Show Q for this branch near where it joins the right bus / return
+        # ── Branch flow indicator badge ───────────────────────────────────────
         q_lpm = m3s_to_lpm(branch.comps[0].q_m3s) if branch.comps else 0.0
         if q_lpm > 0.001:
             badge_x = (bus_right - 52) if has_siblings else (ret_x - 56)
@@ -745,14 +824,27 @@ class CanvasView(tk.Frame):
                           fill='#AED6F1', font=('Arial', 7, 'bold'),
                           justify='center')
 
+        # ── Final connection (after last component = insert at end) ───────────
+        insert_end = len(branch.comps)
+        is_sel_end = (self._sel_line is not None and
+                      self._sel_line[0] is branch and
+                      self._sel_line[1] == insert_end)
+
         if has_siblings:
-            # From end of branch to right bus
             c.create_line(cx, by, bus_right, by,
-                          fill='#2C3E50', width=2)
+                          fill='#F39C12' if is_sel_end else '#2C3E50', width=2)
+            hit_end = c.create_rectangle(cx, by - 10, bus_right, by + 10,
+                                         fill='#FEF9E7' if is_sel_end else '#FDFEFE',
+                                         outline='#F39C12' if is_sel_end else '')
+            self._register_gap(hit_end, branch, insert_end)
         else:
-            # Single branch: straight line directly to return box
             c.create_line(cx, by, ret_x, by,
-                          fill='#2C3E50', width=2, arrow='last')
+                          fill='#F39C12' if is_sel_end else '#2C3E50',
+                          width=2, arrow='last')
+            hit_end = c.create_rectangle(cx, by - 10, ret_x, by + 10,
+                                         fill='#FEF9E7' if is_sel_end else '#FDFEFE',
+                                         outline='#F39C12' if is_sel_end else '')
+            self._register_gap(hit_end, branch, insert_end)
 
     def _draw_comp_box(self, x, y, w, h, comp, tag, selected):
         """Draw a single component box with post-sim overlay."""
@@ -813,15 +905,32 @@ class CanvasView(tk.Frame):
                            lambda e, cp=comp: self._click_comp(cp))
 
     def _on_click(self, event):
-        """Handle canvas click outside component boxes."""
+        """Handle canvas click on empty background — deselect everything."""
         items = self.canvas.find_overlapping(
             event.x - 2, event.y - 2, event.x + 2, event.y + 2)
         if not items:
+            self._sel_line = None
             self.on_select(None)
 
     def _click_comp(self, comp):
         self._sel = comp.uid
+        self._sel_line = None    # deselect any line
         self.on_select(comp)
+
+    def _register_gap(self, item, branch, insert_idx):
+        """Register a canvas item as a clickable line-segment insertion point."""
+        c = self.canvas
+        self._line_map[item] = (branch, insert_idx)
+        c.tag_bind(item, '<Button-1>',
+                   lambda e, b=branch, i=insert_idx: self._click_line(b, i))
+        c.tag_bind(item, '<Enter>', lambda e: c.config(cursor='crosshair'))
+        c.tag_bind(item, '<Leave>', lambda e: c.config(cursor='arrow'))
+
+    def _click_line(self, branch, insert_idx):
+        """Called when a line-gap hit zone is clicked."""
+        self._sel      = None    # deselect any component
+        self._sel_line = (branch, insert_idx)
+        self.on_line_select(branch, insert_idx)
 
 
 class WaterFlowApp:
@@ -835,6 +944,7 @@ class WaterFlowApp:
 
         self.network  = HydroNetwork()
         self.sel_comp = None
+        self.sel_line = None   # (branch, insert_idx) or None
 
         # ── Pre-populate a demo network so something is visible at startup ──
         b = self.network.branches[0]
@@ -872,7 +982,8 @@ class WaterFlowApp:
         pane.add(upper, minsize=300)
 
         # Canvas (left, larger portion)
-        self.canvas_view = CanvasView(upper, self._on_select)
+        self.canvas_view = CanvasView(upper, self._on_select,
+                                      on_line_select=self._on_line_select)
         upper.add(self.canvas_view, minsize=500)
 
         # Right side: branch selector + properties (narrower)
@@ -984,6 +1095,7 @@ class WaterFlowApp:
 
     def _on_select(self, comp):
         self.sel_comp = comp
+        self.sel_line = None          # deselect any line
         self.props.load(comp)
         self.canvas_view.draw(self.network, comp)
 
@@ -993,6 +1105,33 @@ class WaterFlowApp:
         self.v_pump_p.set(self.network.pump.pbar)
         self.v_pump_q.set(self.network.pump.qmax)
         self._refresh()
+
+    def _on_line_select(self, branch, insert_idx):
+        """Called when a line segment (gap) on the canvas is clicked."""
+        self.sel_comp = None
+        self.sel_line = (branch, insert_idx)
+        # Also update the branch selector to reflect the branch of the clicked line
+        if branch in self.network.branches:
+            self.sel_branch = branch
+        self.props.load_line_info(branch, insert_idx,
+                                  on_insert=lambda kind: self._insert_at(kind, branch, insert_idx))
+        self.canvas_view.draw(self.network, selected_line=self.sel_line)
+
+    def _insert_at(self, kind, branch, idx):
+        """Insert a new component at *idx* in *branch* and select it."""
+        if kind == 'pipe':
+            comp = PipeComp()
+        elif kind == 'valve':
+            comp = ValveComp()
+        elif kind == 'device':
+            comp = DeviceComp()
+        else:
+            return
+        branch.comps.insert(idx, comp)
+        self.sel_line = None
+        self.sel_comp = comp
+        self._refresh()
+        self.props.load(comp)
 
     def _on_branch_select(self, _event=None):
         idxs = self.branch_lb.curselection()
@@ -1020,7 +1159,11 @@ class WaterFlowApp:
         self._refresh()
 
     def _add_comp(self, kind):
-        """Add a component to the currently selected branch."""
+        """Add a component to the currently selected branch.
+
+        If a line segment is selected, inserts at that exact position.
+        Otherwise appends to the end of the selected branch.
+        """
         if kind == 'pipe':
             c = PipeComp()
         elif kind == 'valve':
@@ -1029,7 +1172,12 @@ class WaterFlowApp:
             c = DeviceComp()
         else:
             return
-        self.sel_branch.comps.append(c)
+        if self.sel_line is not None:
+            branch, idx = self.sel_line
+            branch.comps.insert(idx, c)
+            self.sel_line = None
+        else:
+            self.sel_branch.comps.append(c)
         self.sel_comp = c
         self._refresh()
         self.props.load(c)
@@ -1096,7 +1244,8 @@ class WaterFlowApp:
         self.network.pump.qmax = self.v_pump_q.get()
         self.network.tank.h_m  = self.v_tank_h.get()
 
-        self.canvas_view.draw(self.network, self.sel_comp)
+        self.canvas_view.draw(self.network, self.sel_comp,
+                              selected_line=self.sel_line)
 
     # ── Entry point ─────────────────────────────────────────────────────────
 
