@@ -600,9 +600,9 @@ class CanvasView(tk.Frame):
         n_branches = len(network.branches)
         max_comps  = max((len(b.comps) for b in network.branches), default=0)
 
-        # Dynamic canvas size
+        # Dynamic canvas size — extra height for the return-line route below branches
         cw = max(800, BRANCH_START_X + (max_comps + 1) * (COMP_W + COMP_GAP) + RIGHT_PAD + 160)
-        ch = max(300, TOP_PAD * 2 + n_branches * ROW_H + ROW_H // 2)
+        ch = max(340, TOP_PAD * 2 + n_branches * ROW_H + ROW_H // 2 + 60)
         c.config(scrollregion=(0, 0, cw, ch))
 
         pump_cy = ch // 2
@@ -682,6 +682,34 @@ class CanvasView(tk.Frame):
                           text=branch.name, fill='#5D6D7E',
                           font=('Arial', 8, 'italic'), anchor='w')
 
+        # ── Return line: RESERVOIR → PUMP (closed loop) ──────────────────
+        # Route dashed blue line below all branch rows back to pump inlet.
+        ret_cx  = ret_x + 55          # centre-bottom of return box
+        ret_bot = ret_cy + 30         # bottom edge of return box
+        pump_cx = LEFT_PAD + PUMP_W // 2   # centre-bottom of pump
+        pump_bot = pump_cy + PUMP_H // 2   # bottom edge of pump
+        # Route: a few px below the lowest branch, then straight back left
+        route_y = max(branch_ys[-1] if branch_ys else ret_cy,
+                      ret_bot) + 28
+        # Ensure route_y is below the return box too
+        route_y = max(route_y, ret_bot + 20)
+
+        dash = (6, 4)
+        ret_line_color = '#5DADE2'
+        # Vertical drop from return box bottom
+        c.create_line(ret_cx, ret_bot, ret_cx, route_y,
+                      fill=ret_line_color, width=2, dash=dash)
+        # Horizontal run back towards pump
+        c.create_line(ret_cx, route_y, pump_cx, route_y,
+                      fill=ret_line_color, width=2, dash=dash)
+        # Vertical rise to pump bottom, with arrowhead pointing into pump
+        c.create_line(pump_cx, route_y, pump_cx, pump_bot,
+                      fill=ret_line_color, width=2, dash=dash, arrow='last')
+        # Small "RETURN" label on the bottom run
+        c.create_text((ret_cx + pump_cx) // 2, route_y - 8,
+                      text="return line", fill=ret_line_color,
+                      font=('Arial', 7, 'italic'))
+
     def _draw_branch(self, branch, by, pump_cy, ret_x, ret_cy,
                      bus_left, bus_right, has_siblings):
         c  = self.canvas
@@ -703,6 +731,19 @@ class CanvasView(tk.Frame):
                           cx + COMP_W + COMP_GAP, by,
                           fill='#2C3E50', width=2, arrow='last')
             cx += COMP_W + COMP_GAP
+
+        # ── Branch flow indicator badge ───────────────────────────────────
+        # Show Q for this branch near where it joins the right bus / return
+        q_lpm = m3s_to_lpm(branch.comps[0].q_m3s) if branch.comps else 0.0
+        if q_lpm > 0.001:
+            badge_x = (bus_right - 52) if has_siblings else (ret_x - 56)
+            bw, bh = 52, 18
+            c.create_rectangle(badge_x, by - bh - 2, badge_x + bw, by - 2,
+                                fill='#1A5276', outline='#5DADE2', width=1)
+            c.create_text(badge_x + bw // 2, by - bh // 2 - 2,
+                          text=f"▶ {q_lpm:.2f} L/min",
+                          fill='#AED6F1', font=('Arial', 7, 'bold'),
+                          justify='center')
 
         if has_siblings:
             # From end of branch to right bus
