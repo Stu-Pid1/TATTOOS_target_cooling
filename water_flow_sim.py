@@ -486,6 +486,10 @@ TOP_PAD   = 30
 BRANCH_START_X = LEFT_PAD + PUMP_W + 30   # x where branch components begin (no HX)
 # When HX is present, branch start is pushed right by HX_W + HX_GAP*2
 HX_BRANCH_START_X = LEFT_PAD + PUMP_W + HX_GAP + HX_W + HX_GAP
+MIN_CANVAS_WIDTH  = 600    # minimum horizontal canvas / sash position (px)
+
+# Properties panel formatting
+PROP_FLOAT_THRESHOLD = 10.0  # values ≥ this are displayed as integers in entry boxes
 
 # Colours for flow-rate heat-map on canvas (low→high)
 FLOW_COLORS = ['#AED6F1', '#5DADE2', '#2E86C1', '#1A5276']
@@ -546,7 +550,7 @@ class PropertiesPanel(tk.Frame):
                 var = tk.StringVar(value=str(val))
             else:
                 # Numeric: show the value formatted to a sensible precision
-                fmt = ".0f" if (isinstance(val, float) and val >= 10) else ".4g"
+                fmt = ".0f" if (isinstance(val, float) and val >= PROP_FLOAT_THRESHOLD) else ".4g"
                 var = tk.StringVar(value=format(val, fmt))
             e = tk.Entry(self.inner, textvariable=var, width=14,
                          relief='solid', bd=1, font=('Arial', 9))
@@ -1273,7 +1277,7 @@ class WaterFlowApp:
             try:
                 total_w = self.root.winfo_width()
                 # Canvas takes 75 % of the window; right panel gets the remaining 25 %
-                sash_x = max(600, int(total_w * 0.75))
+                sash_x = max(MIN_CANVAS_WIDTH, int(total_w * 0.75))
                 upper.sash_place(0, sash_x, 0)
             except Exception:
                 pass
