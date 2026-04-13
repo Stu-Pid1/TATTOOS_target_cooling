@@ -23,9 +23,12 @@ from tkinter import ttk, messagebox
 import math
 
 # ─── Physics constants ──────────────────────────────────────────────────────
-RHO   = 1000.0   # water density          [kg/m³]
-MU    = 0.001    # dynamic viscosity      [Pa·s]  (water @ ~20 °C)
-G_ACC = 9.81     # gravitational accel.   [m/s²]
+RHO        = 1000.0   # water density                [kg/m³]
+MU         = 0.001    # dynamic viscosity            [Pa·s]  (water @ ~20 °C)
+G_ACC      = 9.81     # gravitational accel.         [m/s²]
+CP_WATER   = 4186.0   # water specific heat          [J/(kg·K)]
+CP_GLYCOL  = 3500.0   # ~50 % EG mixture spec. heat  [J/(kg·K)]
+RHO_GLYCOL = 1060.0   # ~50 % EG mixture density     [kg/m³]
 
 # ─── Unit helpers ───────────────────────────────────────────────────────────
 def lpm_to_m3s(q):  return q / 60_000.0
@@ -65,6 +68,23 @@ def reynolds_number(q_m3s, d_m):
     return RHO * v * d_m / MU
 
 
+def hx_effectiveness(UA, C_hot, C_cold):
+    """
+    Counter-flow heat-exchanger NTU-effectiveness.
+    Returns ε ∈ [0, 1].
+    """
+    C_min = min(C_hot, C_cold)
+    C_max = max(C_hot, C_cold)
+    if C_min < 1e-9 or UA <= 0 or C_max < 1e-9:
+        return 0.0
+    NTU = UA / C_min
+    C_r = C_min / C_max
+    if abs(1.0 - C_r) < 1e-6:           # balanced streams
+        return NTU / (1.0 + NTU)
+    exp_t = math.exp(-NTU * (1.0 - C_r))
+    return min((1.0 - exp_t) / (1.0 - C_r * exp_t), 1.0)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  COMPONENT CLASSES
 # ═══════════════════════════════════════════════════════════════════════════
@@ -80,8 +100,10 @@ class BaseComp:
         self.kind  = kind
         self.label = label
         # Filled by solver after each simulation run
-        self.q_m3s = 0.0   # flow rate    [m³/s]
-        self.dp_pa = 0.0   # pressure drop [Pa]
+        self.q_m3s = 0.0   # flow rate      [m³/s]
+        self.dp_pa = 0.0   # pressure drop  [Pa]
+        self.T_in  = 0.0   # water inlet T  [°C]
+        self.T_out = 0.0   # water outlet T [°C]
 
     def resistance(self):
         """Hydraulic resistance [Pa·s/m³]"""
@@ -134,6 +156,35 @@ class TankComp(BaseComp):
 
     def canvas_label(self):
         return f"TANK\n{self.h_m:.1f} m\n({self.source_pa():.0f} Pa)"
+
+
+class HeatExchangerComp(BaseComp):
+    """
+    Liquid-to-liquid heat exchanger on the main water circuit line.
+
+    Water side  : pump outlet → HX → manifold (cools the return water).
+    Glycol side : user-defined glycol flow and inlet temperature.
+
+    Hydraulic   : fixed ΔP on the water side (dp_pa).
+    Thermal     : counter-flow NTU-effectiveness model.
+    """
+    COLOR = '#117A65'
+
+    def __init__(self):
+        super().__init__('hx', 'Heat Exchanger')
+        self.T_glycol_in  = 15.0    # glycol inlet temperature    [°C]
+        self.Q_glycol_lpm = 8.0     # glycol volumetric flow rate [L/min]
+        self.UA           = 300.0   # overall UA coefficient      [W/K]
+        self.dp_pa        = 200.0   # water-side pressure drop    [Pa]
+        # Results – populated by thermal solver
+        self.T_water_in   = 0.0     # = T_return                  [°C]
+        self.T_water_out  = 0.0     # = T_manifold                [°C]
+        self.T_glycol_out = 0.0     # computed glycol outlet T    [°C]
+        self.Q_duty       = 0.0     # heat removed from water     [W]
+
+    def canvas_label(self):
+        return (f"HX\nUA={self.UA:.0f} W/K\n"
+                f"Glycol {self.Q_glycol_lpm:.1f} L/min @ {self.T_glycol_in:.0f}°C")
 
 
 class PipeComp(BaseComp):
@@ -197,6 +248,30 @@ class DeviceComp(BaseComp):
         return f"{self.dname}\nΔP={self.dp_ref:.0f} Pa\n@{self.qref_lpm:.1f} L/min"
 
 
+class HeatSourceComp(BaseComp):
+    """
+    A thermal load on the water circuit — adds Q_W watts of heat to the water
+    and also presents a hydraulic resistance (linear ΔP model).
+
+    Represents targets, cold-plates, or any powered device being cooled.
+    """
+    COLOR = '#E74C3C'
+
+    def __init__(self, name="Heat Source", Q_W=100.0, dp_pa=500.0, qref_lpm=5.0):
+        super().__init__('heatsource', name)
+        self.hname    = name
+        self.Q_W      = float(Q_W)       # heat added to water  [W]
+        self.dp_ref   = float(dp_pa)     # Pa at reference flow
+        self.qref_lpm = float(qref_lpm)  # reference flow       [L/min]
+
+    def resistance(self):
+        qr = lpm_to_m3s(self.qref_lpm)
+        return self.dp_ref / qr if qr > 1e-12 else 0.0
+
+    def canvas_label(self):
+        return f"{self.hname}\nQ={self.Q_W:.0f} W\nΔP={self.dp_ref:.0f} Pa"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  NETWORK MODEL
 # ═══════════════════════════════════════════════════════════════════════════
@@ -238,7 +313,13 @@ class HydroNetwork:
         self.pump      = PumpComp()
         self.tank      = TankComp()
         self.use_tank  = False
+        self.hx        = HeatExchangerComp()
+        self.use_hx    = False
         self.branches  = [Branch()]
+        # Thermal results – populated by simulate()
+        self.T_manifold   = None   # [°C] water temp at manifold inlet
+        self.T_return     = None   # [°C] water temp returning to HX/pump
+        self.Q_total_heat = 0.0    # [W]  total heat from all heat sources
 
     def add_branch(self):
         b = Branch()
@@ -253,13 +334,17 @@ class HydroNetwork:
         p = self.pump.source_pa()
         if self.use_tank:
             p += self.tank.source_pa()
+        if self.use_hx:
+            p = max(0.0, p - self.hx.dp_pa)
         return p
 
     def simulate(self):
         """
         Solve the network and populate .q_m3s / .dp_pa on every component.
+        Then run the steady-state thermal solver.
         Returns a results dict for display.
         """
+        # ── Hydraulic solve ──────────────────────────────────────────────────
         P    = self.source_pa()
         Qmax = lpm_to_m3s(self.pump.qmax)
 
@@ -300,6 +385,9 @@ class HydroNetwork:
             self.tank.q_m3s = Q_total
             self.tank.dp_pa = self.tank.source_pa()
 
+        # ── Steady-state thermal solve ────────────────────────────────────────
+        self._thermal_solve(Q_total, Q_list)
+
         return {
             'P_source':  P,
             'P_actual':  P_actual,
@@ -307,6 +395,74 @@ class HydroNetwork:
             'Q_list':    Q_list,
             'R_list':    R_list,
         }
+
+    def _thermal_solve(self, Q_total_m3s, Q_list):
+        """
+        Steady-state temperature calculation.
+
+        Energy balance for the closed loop (zero heat capacity in reservoir):
+          Q_removed_by_HX  =  Q_total_heat_sources
+
+        Using the NTU-effectiveness method for a counter-flow HX:
+          T_return  = T_glycol_in + Q_heat / (ε · C_min)
+          T_manifold = T_return - Q_heat / C_water
+
+        Per branch:
+          ΔT_component = Q_source_W / (ṁ_branch · cp_water)
+        """
+        # Total heat from all heat sources [W]
+        Q_heat = sum(
+            c.Q_W
+            for b in self.branches
+            for c in b.comps
+            if isinstance(c, HeatSourceComp)
+        )
+        self.Q_total_heat = Q_heat
+
+        # Water capacity rate [W/K]
+        m_dot_water = Q_total_m3s * RHO          # kg/s
+        C_water     = m_dot_water * CP_WATER      # W/K
+
+        if self.use_hx and C_water > 1e-9:
+            m_dot_gly = lpm_to_m3s(self.hx.Q_glycol_lpm) * RHO_GLYCOL
+            C_glycol  = m_dot_gly * CP_GLYCOL     # W/K
+            C_min     = min(C_water, C_glycol)
+            C_max     = max(C_water, C_glycol)
+            eps       = hx_effectiveness(self.hx.UA, C_min, C_max)
+
+            if eps * C_min > 1e-9 and Q_heat > 0:
+                T_return    = self.hx.T_glycol_in + Q_heat / (eps * C_min)
+                T_manifold  = T_return - Q_heat / C_water
+                T_gly_out   = self.hx.T_glycol_in + Q_heat / C_glycol if C_glycol > 1e-9 else self.hx.T_glycol_in
+            else:
+                # No heat sources → isothermal at glycol inlet temp
+                T_return   = self.hx.T_glycol_in
+                T_manifold = self.hx.T_glycol_in
+                T_gly_out  = self.hx.T_glycol_in
+
+            # Store HX results
+            self.hx.T_water_in   = T_return
+            self.hx.T_water_out  = T_manifold
+            self.hx.T_glycol_out = T_gly_out
+            self.hx.Q_duty       = Q_heat
+        else:
+            # No HX — use 20 °C reference (ambient)
+            T_manifold = 20.0
+            T_return   = 20.0 + (Q_heat / C_water if C_water > 1e-9 else 0.0)
+
+        self.T_manifold = T_manifold
+        self.T_return   = T_return
+
+        # ── Per-branch per-component temperatures ────────────────────────────
+        for b, q_branch in zip(self.branches, Q_list):
+            m_dot_b = q_branch * RHO              # kg/s
+            C_b     = m_dot_b * CP_WATER          # W/K
+            T_cur   = T_manifold
+            for comp in b.comps:
+                comp.T_in = T_cur
+                if isinstance(comp, HeatSourceComp) and C_b > 1e-9:
+                    T_cur += comp.Q_W / C_b
+                comp.T_out = T_cur
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -320,10 +476,14 @@ COMP_GAP = 20   # horizontal gap between boxes (wider = easier to click)
 ROW_H   = 100   # vertical space per branch row
 PUMP_W  = 100
 PUMP_H  = 80
+HX_W    = 120   # heat exchanger box width (px)
+HX_GAP  = 20    # gap between pump / HX / manifold
 LEFT_PAD  = 20
 RIGHT_PAD = 20
 TOP_PAD   = 30
-BRANCH_START_X = LEFT_PAD + PUMP_W + 30   # x where branch components begin
+BRANCH_START_X = LEFT_PAD + PUMP_W + 30   # x where branch components begin (no HX)
+# When HX is present, branch start is pushed right by HX_W + HX_GAP*2
+HX_BRANCH_START_X = LEFT_PAD + PUMP_W + HX_GAP + HX_W + HX_GAP
 
 # Colours for flow-rate heat-map on canvas (low→high)
 FLOW_COLORS = ['#AED6F1', '#5DADE2', '#2E86C1', '#1A5276']
@@ -451,12 +611,12 @@ class PropertiesPanel(tk.Frame):
         btn_f = tk.Frame(self.inner, bg='#ECF0F1')
         btn_f.pack(fill='x', pady=4)
         bs = {'relief': 'flat', 'pady': 4, 'padx': 6, 'bd': 0, 'font': ('Arial', 8)}
-        tk.Button(btn_f, text="+ Pipe",   bg='#2980B9', fg='white',
-                  command=lambda: on_insert('pipe'),   **bs).pack(side='left', padx=2)
-        tk.Button(btn_f, text="+ Valve",  bg='#27AE60', fg='white',
-                  command=lambda: on_insert('valve'),  **bs).pack(side='left', padx=2)
-        tk.Button(btn_f, text="+ Device", bg='#D35400', fg='white',
-                  command=lambda: on_insert('device'), **bs).pack(side='left', padx=2)
+        tk.Button(btn_f, text="+ Pipe",        bg='#2980B9', fg='white',
+                  command=lambda: on_insert('pipe'),        **bs).pack(side='left', padx=2)
+        tk.Button(btn_f, text="+ Valve",       bg='#27AE60', fg='white',
+                  command=lambda: on_insert('valve'),       **bs).pack(side='left', padx=2)
+        tk.Button(btn_f, text="+ Heat Source", bg='#E74C3C', fg='white',
+                  command=lambda: on_insert('heatsource'),  **bs).pack(side='left', padx=2)
 
         self.result_lbl.config(text="")
 
@@ -488,6 +648,13 @@ class PropertiesPanel(tk.Frame):
                 ('Height',  comp.h_m, 'm',  0.1, 30.0, 'scale'),
                 ('Volume',  comp.vol, 'L',  1.0, 500.0, 'scale'),
             ]
+        if isinstance(comp, HeatExchangerComp):
+            return [
+                ('Glycol T_in',  comp.T_glycol_in,  '°C',   -20.0, 80.0,  'scale'),
+                ('Glycol flow',  comp.Q_glycol_lpm, 'L/min', 0.1,  50.0,  'scale'),
+                ('UA',           comp.UA,            'W/K',   10.0, 5000.0,'scale'),
+                ('Water-side ΔP',comp.dp_pa,         'Pa',    0.0,  5000.0,'scale'),
+            ]
         if isinstance(comp, PipeComp):
             return [
                 ('Diameter', comp.d_mm, 'mm', 1.0,  100.0, 'scale'),
@@ -497,6 +664,13 @@ class PropertiesPanel(tk.Frame):
             return [
                 ('Diameter', comp.d_mm, 'mm',  1.0, 100.0, 'scale'),
                 ('Opening',  comp.pct,  '%',   0.0, 100.0, 'scale'),
+            ]
+        if isinstance(comp, HeatSourceComp):
+            return [
+                ('Name',     comp.hname,    '',       None, None,   'entry'),
+                ('Heat Q',   comp.Q_W,      'W',      0.0,  5000.0, 'scale'),
+                ('ΔP ref',   comp.dp_ref,   'Pa',     0.0,  1e6,    'scale'),
+                ('Q ref',    comp.qref_lpm, 'L/min',  0.01, 100.0,  'scale'),
             ]
         if isinstance(comp, DeviceComp):
             return [
@@ -514,12 +688,23 @@ class PropertiesPanel(tk.Frame):
         elif isinstance(comp, TankComp):
             comp.h_m  = vals['Height']
             comp.vol  = vals['Volume']
+        elif isinstance(comp, HeatExchangerComp):
+            comp.T_glycol_in  = vals['Glycol T_in']
+            comp.Q_glycol_lpm = vals['Glycol flow']
+            comp.UA           = vals['UA']
+            comp.dp_pa        = vals['Water-side ΔP']
         elif isinstance(comp, PipeComp):
             comp.d_mm = vals['Diameter']
             comp.l_m  = vals['Length']
         elif isinstance(comp, ValveComp):
             comp.d_mm = vals['Diameter']
             comp.pct  = vals['Opening']
+        elif isinstance(comp, HeatSourceComp):
+            comp.hname    = vals['Name']
+            comp.label    = vals['Name']
+            comp.Q_W      = vals['Heat Q']
+            comp.dp_ref   = vals['ΔP ref']
+            comp.qref_lpm = vals['Q ref']
         elif isinstance(comp, DeviceComp):
             comp.dname    = vals['Name']
             comp.label    = vals['Name']
@@ -531,7 +716,7 @@ class ResultsPanel(tk.Frame):
     """Bottom panel showing a table of simulation results."""
 
     COLS = ('Component', 'Branch', 'Flow (L/min)', 'ΔP (Pa)', 'ΔP (mbar)', 'ΔP (bar)',
-            'Velocity (m/s)', 'Reynolds No.')
+            'Velocity (m/s)', 'Reynolds No.', 'T_out (°C)', 'Q_heat (W)')
 
     def __init__(self, parent):
         super().__init__(parent, bd=1, relief='sunken')
@@ -552,7 +737,7 @@ class ResultsPanel(tk.Frame):
         vsb.config(command=self.tree.yview)
         hsb.config(command=self.tree.xview)
 
-        widths = [160, 80, 100, 80, 90, 80, 110, 100]
+        widths = [160, 80, 100, 80, 90, 80, 110, 100, 90, 90]
         for col, w in zip(self.COLS, widths):
             self.tree.heading(col, text=col)
             self.tree.column(col, width=w, anchor='center', minwidth=60)
@@ -572,7 +757,7 @@ class ResultsPanel(tk.Frame):
         dp = pa_to_bar(network.pump.dp_pa)
         self.tree.insert('', 'end', values=(
             'Pump', '—',
-            f"{q:.3f}", f"{dp*1e5:.1f}", f"{dp*1000:.2f}", f"{dp:.4f}", '—', '—'
+            f"{q:.3f}", f"{dp*1e5:.1f}", f"{dp*1000:.2f}", f"{dp:.4f}", '—', '—', '—', '—'
         ))
 
         # Tank row (if used)
@@ -580,19 +765,35 @@ class ResultsPanel(tk.Frame):
             dp_t = pa_to_bar(network.tank.dp_pa)
             self.tree.insert('', 'end', values=(
                 'Header Tank', '—', f"{q:.3f}",
-                f"{dp_t*1e5:.1f}", f"{dp_t*1000:.2f}", f"{dp_t:.4f}", '—', '—'
+                f"{dp_t*1e5:.1f}", f"{dp_t*1000:.2f}", f"{dp_t:.4f}", '—', '—', '—', '—'
+            ))
+
+        # HX row (if used)
+        if network.use_hx and network.T_manifold is not None:
+            hx = network.hx
+            dp_hx = pa_to_bar(hx.dp_pa)
+            self.tree.insert('', 'end', values=(
+                f"HX | UA={hx.UA:.0f} W/K | Gly {hx.Q_glycol_lpm:.1f} L/min",
+                '—', f"{q:.3f}",
+                f"{hx.dp_pa:.1f}", f"{dp_hx*1000:.2f}", f"{dp_hx:.5f}",
+                '—', '—',
+                f"{hx.T_water_out:.1f}",
+                f"−{hx.Q_duty:.0f}"   # negative = heat removed
             ))
 
         # Component rows
         for b in network.branches:
-            for c in b.comps:
-                ql    = m3s_to_lpm(c.q_m3s)
-                dp_pa = c.dp_pa
+            for comp in b.comps:
+                ql    = m3s_to_lpm(comp.q_m3s)
+                dp_pa = comp.dp_pa
                 dp_b  = pa_to_bar(dp_pa)
-                vel   = c.velocity()
-                re    = c.reynolds()
+                vel   = comp.velocity()
+                re    = comp.reynolds()
+                t_out = f"{comp.T_out:.1f}" if comp.T_out > 0.0 else '—'
+                q_heat = (f"{comp.Q_W:.0f}" if isinstance(comp, HeatSourceComp)
+                          else '—')
                 self.tree.insert('', 'end', values=(
-                    c.canvas_label().replace('\n', ' | '),
+                    comp.canvas_label().replace('\n', ' | '),
                     b.name,
                     f"{ql:.3f}",
                     f"{dp_pa:.2f}",
@@ -600,13 +801,24 @@ class ResultsPanel(tk.Frame):
                     f"{dp_b:.5f}",
                     f"{vel:.3f}" if vel > 0 else '—',
                     f"{re:.0f}" if re > 0 else '—',
+                    t_out,
+                    q_heat,
                 ))
 
         qtot = m3s_to_lpm(results['Q_total'])
+        thermal_str = ""
+        if network.T_manifold is not None:
+            thermal_str = (f"  |  T_manifold: {network.T_manifold:.1f} °C"
+                           f"  |  T_return: {network.T_return:.1f} °C"
+                           f"  |  Total heat: {network.Q_total_heat:.0f} W")
+            if network.use_hx:
+                thermal_str += (f"  |  Glycol out: {network.hx.T_glycol_out:.1f} °C"
+                                f"  |  HX duty: {network.hx.Q_duty:.0f} W")
         self.summary_var.set(
             f"Total flow: {qtot:.2f} L/min  |  "
             f"Source pressure: {pa_to_bar(results['P_source']):.3f} bar  |  "
             f"Operating pressure: {pa_to_bar(results['P_actual']):.3f} bar"
+            + thermal_str
         )
 
 
@@ -653,8 +865,15 @@ class CanvasView(tk.Frame):
         n_branches = len(network.branches)
         max_comps  = max((len(b.comps) for b in network.branches), default=0)
 
+        # ── Dynamic branch_start_x (shifted right when HX present) ───────
+        if network.use_hx:
+            branch_start_x = HX_BRANCH_START_X
+        else:
+            branch_start_x = BRANCH_START_X
+        bus_left_x = branch_start_x - 8   # pre-compute for HX wire endpoint
+
         # Dynamic canvas size — extra height for the return-line route below branches
-        cw = max(800, BRANCH_START_X + (max_comps + 1) * (COMP_W + COMP_GAP) + RIGHT_PAD + 160)
+        cw = max(800, branch_start_x + (max_comps + 1) * (COMP_W + COMP_GAP) + RIGHT_PAD + 160)
         ch = max(340, TOP_PAD * 2 + n_branches * ROW_H + ROW_H // 2 + 60)
         c.config(scrollregion=(0, 0, cw, ch))
 
@@ -680,6 +899,43 @@ class CanvasView(tk.Frame):
                        tag=f"pump_{network.pump.uid}", comp=network.pump,
                        bold=True)
 
+        # ── Heat Exchanger (between pump and manifold) ───────────────────
+        if network.use_hx:
+            hx = network.hx
+            hx_sel = (selected_comp is not None and
+                      isinstance(selected_comp, HeatExchangerComp))
+            hx_x   = LEFT_PAD + PUMP_W + HX_GAP
+            hx_y   = pump_cy - COMP_H // 2 - 8
+            hx_h   = COMP_H + 16   # slightly taller than components
+            # Wire pump → HX
+            c.create_line(LEFT_PAD + PUMP_W, pump_cy,
+                          hx_x, pump_cy,
+                          fill='#2C3E50', width=2, arrow='last')
+            # HX box
+            hx_label = hx.canvas_label()
+            if network.T_manifold is not None:
+                hx_label += (f"\nIn {hx.T_water_in:.1f}°C → {hx.T_water_out:.1f}°C"
+                             f"\nGly → {hx.T_glycol_out:.1f}°C  {hx.Q_duty:.0f} W")
+            outline_hx = '#F39C12' if hx_sel else '#2C3E50'
+            lw_hx = 3 if hx_sel else 1
+            r = c.create_rectangle(hx_x, hx_y, hx_x + HX_W, hx_y + hx_h,
+                                   fill=HeatExchangerComp.COLOR,
+                                   outline=outline_hx, width=lw_hx,
+                                   tags=('hx_box',))
+            t = c.create_text(hx_x + HX_W // 2, hx_y + hx_h // 2,
+                              text=hx_label, fill='white',
+                              font=('Arial', 6, 'bold'), justify='center',
+                              tags=('hx_box',))
+            self._tag_map['hx_box'] = hx
+            for item in (r, t):
+                c.tag_bind(item, '<Button-1>',
+                           lambda e, cp=hx: self._click_comp(cp))
+            # Wire HX → manifold / bus
+            hx_wire_end = bus_left_x if n_branches > 1 else branch_start_x
+            c.create_line(hx_x + HX_W, pump_cy,
+                          hx_wire_end, pump_cy,
+                          fill='#2C3E50', width=2, arrow='last')
+
         # ── Compute branch Y positions ───────────────────────────────────
         if n_branches == 1:
             branch_ys = [ch // 2]
@@ -693,14 +949,15 @@ class CanvasView(tk.Frame):
         ret_cy = ch // 2
 
         # ── Bus wires for parallel branches ──────────────────────────────
-        bus_left  = BRANCH_START_X - 8   # vertical bus x (left side)
+        bus_left  = branch_start_x - 8   # vertical bus x (left side)
         bus_right = ret_x - 8            # vertical bus x (right side)
 
         if n_branches > 1:
-            # Horizontal pump outlet → left bus
-            c.create_line(LEFT_PAD + PUMP_W, pump_cy,
-                          bus_left, pump_cy,
-                          fill='#2C3E50', width=3)
+            # Horizontal pump/HX outlet → left bus
+            if not network.use_hx:
+                c.create_line(LEFT_PAD + PUMP_W, pump_cy,
+                              bus_left, pump_cy,
+                              fill='#2C3E50', width=3)
             # Left vertical bus
             c.create_line(bus_left, branch_ys[0],
                           bus_left, branch_ys[-1],
@@ -714,48 +971,52 @@ class CanvasView(tk.Frame):
                           ret_x, ret_cy,
                           fill='#2C3E50', width=3, arrow='last')
         else:
-            # Single branch: straight line from pump to branch start
-            c.create_line(LEFT_PAD + PUMP_W, pump_cy,
-                          BRANCH_START_X, pump_cy,
-                          fill='#2C3E50', width=3)
+            # Single branch: straight line from source to branch start
+            if not network.use_hx:
+                c.create_line(LEFT_PAD + PUMP_W, pump_cy,
+                              branch_start_x, pump_cy,
+                              fill='#2C3E50', width=3)
+
+        # ── Temperature label at manifold (left bus / branch start) ──────
+        if network.T_manifold is not None:
+            c.create_text(branch_start_x + 2, pump_cy - PUMP_H // 2 - 8,
+                          text=f"T_manifold\n{network.T_manifold:.1f} °C",
+                          fill='#117A65', font=('Arial', 7, 'bold'), anchor='w')
 
         # ── Branches ────────────────────────────────────────────────────
         for branch, by in zip(network.branches, branch_ys):
             self._draw_branch(branch, by, pump_cy, ret_x, ret_cy,
-                              bus_left, bus_right, n_branches > 1)
+                              bus_left, bus_right, n_branches > 1,
+                              branch_start_x)
 
         # ── RETURN box ──────────────────────────────────────────────────
+        ret_label = 'RETURN\n(reservoir)'
+        if network.T_return is not None:
+            ret_label += f"\nT={network.T_return:.1f} °C"
         self._draw_box(ret_x, ret_cy - 30, 110, 60,
-                       '#7F8C8D', 'RETURN\n(reservoir)',
+                       '#7F8C8D', ret_label,
                        tag='return_node')
 
         # ── Branch labels ────────────────────────────────────────────────
         for branch, by in zip(network.branches, branch_ys):
-            c.create_text(BRANCH_START_X, by - COMP_H // 2 - 8,
+            c.create_text(branch_start_x, by - COMP_H // 2 - 8,
                           text=branch.name, fill='#5D6D7E',
                           font=('Arial', 8, 'italic'), anchor='w')
 
         # ── Return line: RESERVOIR → PUMP (closed loop) ──────────────────
-        # Route dashed blue line below all branch rows back to pump inlet.
-        ret_cx  = ret_x + 55          # centre-bottom of return box
-        ret_bot = ret_cy + 30         # bottom edge of return box
-        pump_cx = LEFT_PAD + PUMP_W // 2   # centre-bottom of pump
-        pump_bot = pump_cy + PUMP_H // 2   # bottom edge of pump
-        # Route: a few px below the lowest branch, then straight back left
-        route_y = max(branch_ys[-1] if branch_ys else ret_cy,
-                      ret_bot) + 28
-        # Ensure route_y is below the return box too
-        route_y = max(route_y, ret_bot + 20)
+        ret_cx   = ret_x + 55
+        ret_bot  = ret_cy + 30
+        pump_cx  = LEFT_PAD + PUMP_W // 2
+        pump_bot = pump_cy + PUMP_H // 2
+        route_y  = max(branch_ys[-1] if branch_ys else ret_cy, ret_bot) + 28
+        route_y  = max(route_y, ret_bot + 20)
 
         dash = (6, 4)
         ret_line_color = '#5DADE2'
-        # Vertical drop from return box bottom
         c.create_line(ret_cx, ret_bot, ret_cx, route_y,
                       fill=ret_line_color, width=2, dash=dash)
-        # Horizontal run back towards pump
         c.create_line(ret_cx, route_y, pump_cx, route_y,
                       fill=ret_line_color, width=2, dash=dash)
-        # Vertical rise to pump bottom, with arrowhead pointing into pump
         c.create_line(pump_cx, route_y, pump_cx, pump_bot,
                       fill=ret_line_color, width=2, dash=dash, arrow='last')
         # Small "RETURN" label on the bottom run
@@ -764,9 +1025,12 @@ class CanvasView(tk.Frame):
                       font=('Arial', 7, 'italic'))
 
     def _draw_branch(self, branch, by, pump_cy, ret_x, ret_cy,
-                     bus_left, bus_right, has_siblings):
+                     bus_left, bus_right, has_siblings,
+                     branch_start_x=None):
         c  = self.canvas
-        cx = BRANCH_START_X
+        if branch_start_x is None:
+            branch_start_x = BRANCH_START_X
+        cx = branch_start_x
 
         # ── Initial connection (before first component = insert pos 0) ───────
         if has_siblings:
@@ -871,10 +1135,14 @@ class CanvasView(tk.Frame):
                              fill='white', font=('Arial', 7),
                              justify='center', tags=tags)
 
-        # Post-simulation flow overlay at bottom edge of box
+        # Post-simulation overlay at bottom edge of box
         if q_lpm > 0.0:
-            dp_mbar = pa_to_bar(comp.dp_pa) * 1000
-            overlay = f"Q={q_lpm:.1f}L/min  ΔP={dp_mbar:.0f}mb"
+            if isinstance(comp, HeatSourceComp) and comp.T_out > 0.0:
+                # Show flow + outlet temperature for heat sources
+                overlay = f"Q={q_lpm:.1f}L/min  T_out={comp.T_out:.1f}°C"
+            else:
+                dp_mbar = pa_to_bar(comp.dp_pa) * 1000
+                overlay = f"Q={q_lpm:.1f}L/min  ΔP={dp_mbar:.0f}mb"
             c.create_rectangle(x + 1, y + h - 14, x + w - 1, y + h - 1,
                                 fill='#1A252F', outline='', tags=tags)
             c.create_text(x + w // 2, y + h - 7,
@@ -956,11 +1224,22 @@ class WaterFlowApp:
         b.comps = [
             PipeComp(d_mm=15, l_m=2.0),
             ValveComp(d_mm=15, pct=25.0),   # 25% open – noticeable pressure drop
-            DeviceComp("Radiator", dp_pa=3000, qref_lpm=5.0),
+            HeatSourceComp("Target A", Q_W=150.0, dp_pa=3000, qref_lpm=5.0),
             PipeComp(d_mm=15, l_m=1.0),
         ]
         b2 = self.network.add_branch()
-        b2.comps = [PipeComp(d_mm=10, l_m=3.0)]
+        b2.name = "Branch 2"
+        b2.comps = [
+            PipeComp(d_mm=10, l_m=3.0),
+            HeatSourceComp("Target B", Q_W=80.0, dp_pa=2000, qref_lpm=3.0),
+        ]
+
+        # Enable heat exchanger with sensible defaults
+        self.network.use_hx = True
+        self.network.hx.T_glycol_in  = 15.0
+        self.network.hx.Q_glycol_lpm = 8.0
+        self.network.hx.UA           = 300.0
+        self.network.hx.dp_pa        = 200.0
 
         self.sel_branch = b
 
@@ -1050,14 +1329,25 @@ class WaterFlowApp:
 
         sep()
 
+        # ── Heat exchanger toggle ──────────────────────────────────────
+        self.v_use_hx = tk.BooleanVar(value=True)  # enabled in demo
+        tk.Checkbutton(parent, text="HX", variable=self.v_use_hx,
+                       bg='#2C3E50', fg='white', selectcolor='#1A252F',
+                       activebackground='#2C3E50',
+                       command=self._hx_toggled).pack(side='left', padx=(4, 2))
+        tk.Label(parent, text="(click HX box to edit)", bg='#2C3E50',
+                 fg='#7F8C8D', font=('Arial', 7, 'italic')).pack(side='left')
+
+        sep()
+
         # ── Add-component buttons ──────────────────────────────────────
         btn = {'relief': 'flat', 'pady': 2, 'padx': 8, 'bd': 0}
-        tk.Button(parent, text="+ Pipe",   bg='#2980B9', fg='white',
-                  command=lambda: self._add_comp('pipe'),   **btn).pack(side='left', padx=2)
-        tk.Button(parent, text="+ Valve",  bg='#27AE60', fg='white',
-                  command=lambda: self._add_comp('valve'),  **btn).pack(side='left', padx=2)
-        tk.Button(parent, text="+ Device", bg='#D35400', fg='white',
-                  command=lambda: self._add_comp('device'), **btn).pack(side='left', padx=2)
+        tk.Button(parent, text="+ Pipe",        bg='#2980B9', fg='white',
+                  command=lambda: self._add_comp('pipe'),        **btn).pack(side='left', padx=2)
+        tk.Button(parent, text="+ Valve",       bg='#27AE60', fg='white',
+                  command=lambda: self._add_comp('valve'),       **btn).pack(side='left', padx=2)
+        tk.Button(parent, text="+ Heat Source", bg='#E74C3C', fg='white',
+                  command=lambda: self._add_comp('heatsource'),  **btn).pack(side='left', padx=2)
 
         sep()
 
@@ -1127,8 +1417,8 @@ class WaterFlowApp:
             comp = PipeComp()
         elif kind == 'valve':
             comp = ValveComp()
-        elif kind == 'device':
-            comp = DeviceComp()
+        elif kind in ('device', 'heatsource'):
+            comp = HeatSourceComp()
         else:
             return
         branch.comps.insert(idx, comp)
@@ -1162,6 +1452,10 @@ class WaterFlowApp:
             pass
         self._refresh()
 
+    def _hx_toggled(self):
+        self.network.use_hx = self.v_use_hx.get()
+        self._refresh()
+
     def _add_comp(self, kind):
         """Add a component to the currently selected branch.
 
@@ -1172,8 +1466,8 @@ class WaterFlowApp:
             c = PipeComp()
         elif kind == 'valve':
             c = ValveComp()
-        elif kind == 'device':
-            c = DeviceComp()
+        elif kind in ('device', 'heatsource'):
+            c = HeatSourceComp()
         else:
             return
         if self.sel_line is not None:
@@ -1243,10 +1537,11 @@ class WaterFlowApp:
 
         self.branch_lb.selection_set(sel_idx)
 
-        # Pump label sync
+        # Sync toolbar vars → network model
         self.network.pump.pbar = self.v_pump_p.get()
         self.network.pump.qmax = self.v_pump_q.get()
         self.network.tank.h_m  = self.v_tank_h.get()
+        self.network.use_hx    = self.v_use_hx.get()
 
         self.canvas_view.draw(self.network, self.sel_comp,
                               selected_line=self.sel_line)
