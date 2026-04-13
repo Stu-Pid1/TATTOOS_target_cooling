@@ -433,7 +433,9 @@ class HydroNetwork:
             if eps * C_min > 1e-9 and Q_heat > 0:
                 T_return    = self.hx.T_glycol_in + Q_heat / (eps * C_min)
                 T_manifold  = T_return - Q_heat / C_water
-                T_gly_out   = self.hx.T_glycol_in + Q_heat / C_glycol if C_glycol > 1e-9 else self.hx.T_glycol_in
+                T_gly_out   = (self.hx.T_glycol_in + Q_heat / C_glycol
+                               if C_glycol > 1e-9
+                               else self.hx.T_glycol_in)
             else:
                 # No heat sources → isothermal at glycol inlet temp
                 T_return   = self.hx.T_glycol_in
@@ -773,7 +775,7 @@ class ResultsPanel(tk.Frame):
             hx = network.hx
             dp_hx = pa_to_bar(hx.dp_pa)
             self.tree.insert('', 'end', values=(
-                f"HX | UA={hx.UA:.0f} W/K | Gly {hx.Q_glycol_lpm:.1f} L/min",
+                f"HX | UA={hx.UA:.0f} W/K | Glycol {hx.Q_glycol_lpm:.1f} L/min",
                 '—', f"{q:.3f}",
                 f"{hx.dp_pa:.1f}", f"{dp_hx*1000:.2f}", f"{dp_hx:.5f}",
                 '—', '—',
@@ -1330,7 +1332,7 @@ class WaterFlowApp:
         sep()
 
         # ── Heat exchanger toggle ──────────────────────────────────────
-        self.v_use_hx = tk.BooleanVar(value=True)  # enabled in demo
+        self.v_use_hx = tk.BooleanVar(value=self.network.use_hx)
         tk.Checkbutton(parent, text="HX", variable=self.v_use_hx,
                        bg='#2C3E50', fg='white', selectcolor='#1A252F',
                        activebackground='#2C3E50',
