@@ -661,10 +661,9 @@ class PropertiesPanel(tk.Frame):
             ]
         if isinstance(comp, HeatSourceComp):
             return [
-                ('Name',     comp.hname,    '',       None, None,   'entry'),
-                ('Heat Q',   comp.Q_W,      'W',      0.0,  5000.0, 'scale'),
-                ('ΔP ref',   comp.dp_ref,   'Pa',     0.0,  1e6,    'scale'),
-                ('Q ref',    comp.qref_lpm, 'L/min',  0.01, 100.0,  'scale'),
+                ('Name',   comp.hname,  '',   None, None,   'entry'),
+                ('Heat Q', comp.Q_W,    'W',  0.0,  5000.0, 'scale'),
+                ('ΔP ref', comp.dp_ref, 'Pa', 0.0,  1e6,    'scale'),
             ]
         if isinstance(comp, DeviceComp):
             return [
@@ -694,11 +693,10 @@ class PropertiesPanel(tk.Frame):
             comp.d_mm = vals['Diameter']
             comp.pct  = vals['Opening']
         elif isinstance(comp, HeatSourceComp):
-            comp.hname    = vals['Name']
-            comp.label    = vals['Name']
-            comp.Q_W      = vals['Heat Q']
-            comp.dp_ref   = vals['ΔP ref']
-            comp.qref_lpm = vals['Q ref']
+            comp.hname  = vals['Name']
+            comp.label  = vals['Name']
+            comp.Q_W    = vals['Heat Q']
+            comp.dp_ref = vals['ΔP ref']
         elif isinstance(comp, DeviceComp):
             comp.dname    = vals['Name']
             comp.label    = vals['Name']
