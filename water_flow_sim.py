@@ -472,21 +472,21 @@ class HydroNetwork:
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Canvas geometry constants
-COMP_W  = 130   # component box width  (px)
-COMP_H  = 72    # component box height (px)
-COMP_GAP = 24   # horizontal gap between boxes (wider = easier to click)
-ROW_H   = 120   # vertical space per branch row
-PUMP_W  = 110
-PUMP_H  = 95
-HX_W    = 140   # heat exchanger box width (px)
-HX_GAP  = 22    # gap between pump / HX / manifold
-LEFT_PAD  = 24
-RIGHT_PAD = 24
-TOP_PAD   = 34
-BRANCH_START_X = LEFT_PAD + PUMP_W + 34   # x where branch components begin (no HX)
+COMP_W  = 110   # component box width  (px)
+COMP_H  = 60    # component box height (px)
+COMP_GAP = 20   # horizontal gap between boxes (wider = easier to click)
+ROW_H   = 100   # vertical space per branch row
+PUMP_W  = 100
+PUMP_H  = 80
+HX_W    = 120   # heat exchanger box width (px)
+HX_GAP  = 20    # gap between pump / HX / manifold
+LEFT_PAD  = 20
+RIGHT_PAD = 20
+TOP_PAD   = 30
+BRANCH_START_X = LEFT_PAD + PUMP_W + 30   # x where branch components begin (no HX)
 # When HX is present, branch start is pushed right by HX_W + HX_GAP*2
 HX_BRANCH_START_X = LEFT_PAD + PUMP_W + HX_GAP + HX_W + HX_GAP
-MIN_CANVAS_WIDTH  = 700    # minimum horizontal canvas / sash position (px)
+MIN_CANVAS_WIDTH  = 600    # minimum horizontal canvas / sash position (px)
 
 # Properties panel formatting
 PROP_FLOAT_THRESHOLD = 10.0  # values ≥ this are displayed as integers in entry boxes
@@ -512,14 +512,14 @@ class PropertiesPanel(tk.Frame):
         self._comp = None
         self._vars = {}
 
-        tk.Label(self, text="Properties", font=('Arial', 13, 'bold'),
+        tk.Label(self, text="Properties", font=('Arial', 11, 'bold'),
                  bg='#2C3E50', fg='white').pack(fill='x')
 
         self.inner = tk.Frame(self, bg='#ECF0F1')
         self.inner.pack(fill='both', expand=True, padx=6, pady=6)
 
         self.result_lbl = tk.Label(self, text="", bg='#ECF0F1',
-                                   justify='left', font=('Courier', 11))
+                                   justify='left', font=('Courier', 9))
         self.result_lbl.pack(fill='x', padx=6, pady=(0, 4))
 
         tk.Button(self, text="Apply Changes", command=self._apply,
@@ -553,10 +553,10 @@ class PropertiesPanel(tk.Frame):
                 fmt = ".0f" if (isinstance(val, float) and val >= PROP_FLOAT_THRESHOLD) else ".4g"
                 var = tk.StringVar(value=format(val, fmt))
             e = tk.Entry(self.inner, textvariable=var, width=14,
-                         relief='solid', bd=1, font=('Arial', 11))
+                         relief='solid', bd=1, font=('Arial', 9))
             e.grid(row=row, column=1, sticky='ew', pady=3, padx=(4, 0))
             tk.Label(self.inner, text=unit, bg='#ECF0F1',
-                     font=('Arial', 11)).grid(row=row, column=2, sticky='w', padx=4)
+                     font=('Arial', 9)).grid(row=row, column=2, sticky='w', padx=4)
             self._vars[fname] = (var, ftype)
 
         self.inner.columnconfigure(1, weight=1)
@@ -590,21 +590,21 @@ class PropertiesPanel(tk.Frame):
 
         tk.Label(self.inner, text=f"✦ {branch.name}",
                  bg='#ECF0F1', fg='#2C3E50',
-                 font=('Arial', 11, 'bold'), anchor='w').pack(fill='x', pady=(4, 0))
+                 font=('Arial', 9, 'bold'), anchor='w').pack(fill='x', pady=(4, 0))
         tk.Label(self.inner, text=pos_text,
                  bg='#ECF0F1', fg='#5D6D7E',
-                 font=('Arial', 10), wraplength=190,
+                 font=('Arial', 8), wraplength=190,
                  justify='left', anchor='w').pack(fill='x', pady=(0, 8))
 
         sep = tk.Frame(self.inner, bg='#BDC3C7', height=1)
         sep.pack(fill='x', pady=(0, 6))
 
         tk.Label(self.inner, text="Insert here:",
-                 bg='#ECF0F1', font=('Arial', 11, 'bold'), anchor='w').pack(fill='x')
+                 bg='#ECF0F1', font=('Arial', 9, 'bold'), anchor='w').pack(fill='x')
 
         btn_f = tk.Frame(self.inner, bg='#ECF0F1')
         btn_f.pack(fill='x', pady=4)
-        bs = {'relief': 'flat', 'pady': 4, 'padx': 6, 'bd': 0, 'font': ('Arial', 10)}
+        bs = {'relief': 'flat', 'pady': 4, 'padx': 6, 'bd': 0, 'font': ('Arial', 8)}
         tk.Button(btn_f, text="+ Pipe",        bg='#2980B9', fg='white',
                   command=lambda: on_insert('pipe'),        **bs).pack(side='left', padx=2)
         tk.Button(btn_f, text="+ Valve",       bg='#27AE60', fg='white',
@@ -661,9 +661,10 @@ class PropertiesPanel(tk.Frame):
             ]
         if isinstance(comp, HeatSourceComp):
             return [
-                ('Name',   comp.hname,  '',   None, None,   'entry'),
-                ('Heat Q', comp.Q_W,    'W',  0.0,  5000.0, 'scale'),
-                ('ΔP ref', comp.dp_ref, 'Pa', 0.0,  1e6,    'scale'),
+                ('Name',     comp.hname,    '',       None, None,   'entry'),
+                ('Heat Q',   comp.Q_W,      'W',      0.0,  5000.0, 'scale'),
+                ('ΔP ref',   comp.dp_ref,   'Pa',     0.0,  1e6,    'scale'),
+                ('Q ref',    comp.qref_lpm, 'L/min',  0.01, 100.0,  'scale'),
             ]
         if isinstance(comp, DeviceComp):
             return [
@@ -693,10 +694,11 @@ class PropertiesPanel(tk.Frame):
             comp.d_mm = vals['Diameter']
             comp.pct  = vals['Opening']
         elif isinstance(comp, HeatSourceComp):
-            comp.hname  = vals['Name']
-            comp.label  = vals['Name']
-            comp.Q_W    = vals['Heat Q']
-            comp.dp_ref = vals['ΔP ref']
+            comp.hname    = vals['Name']
+            comp.label    = vals['Name']
+            comp.Q_W      = vals['Heat Q']
+            comp.dp_ref   = vals['ΔP ref']
+            comp.qref_lpm = vals['Q ref']
         elif isinstance(comp, DeviceComp):
             comp.dname    = vals['Name']
             comp.label    = vals['Name']
@@ -713,7 +715,7 @@ class ResultsPanel(tk.Frame):
     def __init__(self, parent):
         super().__init__(parent, bd=1, relief='sunken')
         tk.Label(self, text="Simulation Results",
-                 font=('Arial', 12, 'bold'), bg='#2C3E50', fg='white').pack(fill='x')
+                 font=('Arial', 10, 'bold'), bg='#2C3E50', fg='white').pack(fill='x')
 
         frame = tk.Frame(self)
         frame.pack(fill='both', expand=True)
@@ -729,7 +731,7 @@ class ResultsPanel(tk.Frame):
         vsb.config(command=self.tree.yview)
         hsb.config(command=self.tree.xview)
 
-        widths = [190, 95, 115, 95, 105, 95, 125, 115, 105, 105]
+        widths = [160, 80, 100, 80, 90, 80, 110, 100, 90, 90]
         for col, w in zip(self.COLS, widths):
             self.tree.heading(col, text=col)
             self.tree.column(col, width=w, anchor='center', minwidth=60)
@@ -737,7 +739,7 @@ class ResultsPanel(tk.Frame):
 
         self.summary_var = tk.StringVar(value="Run simulation to see results.")
         tk.Label(self, textvariable=self.summary_var, anchor='w',
-                 font=('Arial', 11), bg='#F0F0F0').pack(fill='x', padx=4)
+                 font=('Arial', 9), bg='#F0F0F0').pack(fill='x', padx=4)
 
     def update(self, network, results):
         """Populate the table with latest simulation data."""
@@ -916,7 +918,7 @@ class CanvasView(tk.Frame):
                                    tags=('hx_box',))
             t = c.create_text(hx_x + HX_W // 2, hx_y + hx_h // 2,
                               text=hx_label, fill='white',
-                              font=('Arial', 8, 'bold'), justify='center',
+                              font=('Arial', 6, 'bold'), justify='center',
                               tags=('hx_box',))
             self._tag_map['hx_box'] = hx
             for item in (r, t):
@@ -973,7 +975,7 @@ class CanvasView(tk.Frame):
         if network.T_manifold is not None:
             c.create_text(branch_start_x + 2, pump_cy - PUMP_H // 2 - 8,
                           text=f"T_manifold\n{network.T_manifold:.1f} °C",
-                          fill='#117A65', font=('Arial', 9, 'bold'), anchor='w')
+                          fill='#117A65', font=('Arial', 7, 'bold'), anchor='w')
 
         # ── Branches ────────────────────────────────────────────────────
         for branch, by in zip(network.branches, branch_ys):
@@ -993,7 +995,7 @@ class CanvasView(tk.Frame):
         for branch, by in zip(network.branches, branch_ys):
             c.create_text(branch_start_x, by - COMP_H // 2 - 8,
                           text=branch.name, fill='#5D6D7E',
-                          font=('Arial', 10, 'italic'), anchor='w')
+                          font=('Arial', 8, 'italic'), anchor='w')
 
         # ── Return line: RESERVOIR → PUMP (closed loop) ──────────────────
         ret_cx   = ret_x + 55
@@ -1014,7 +1016,7 @@ class CanvasView(tk.Frame):
         # Small "RETURN" label on the bottom run
         c.create_text((ret_cx + pump_cx) // 2, route_y - 8,
                       text="return line", fill=ret_line_color,
-                      font=('Arial', 9, 'italic'))
+                      font=('Arial', 7, 'italic'))
 
     def _draw_branch(self, branch, by, pump_cy, ret_x, ret_cy,
                      bus_left, bus_right, has_siblings,
@@ -1061,7 +1063,7 @@ class CanvasView(tk.Frame):
             if is_sel_gap:
                 c.create_text(gap_x1 + COMP_GAP // 2, by - COMP_H // 2 - 7,
                               text='✚ INSERT', fill='#F39C12',
-                              font=('Arial', 8, 'bold'))
+                              font=('Arial', 6, 'bold'))
             self._register_gap(hit, branch, insert_pos)
 
             # Arrow on top
@@ -1079,7 +1081,7 @@ class CanvasView(tk.Frame):
                                 fill='#1A5276', outline='#5DADE2', width=1)
             c.create_text(badge_x + bw // 2, by - bh // 2 - 2,
                           text=f"▶ {q_lpm:.2f} L/min",
-                          fill='#AED6F1', font=('Arial', 9, 'bold'),
+                          fill='#AED6F1', font=('Arial', 7, 'bold'),
                           justify='center')
 
         # ── Final connection (after last component = insert at end) ───────────
@@ -1124,7 +1126,7 @@ class CanvasView(tk.Frame):
         # Full text centred in box
         txt = c.create_text(x + w // 2, y + h // 2 - 4,
                              text=comp.canvas_label(),
-                             fill='white', font=('Arial', 9),
+                             fill='white', font=('Arial', 7),
                              justify='center', tags=tags)
 
         # Post-simulation overlay at bottom edge of box
@@ -1135,11 +1137,11 @@ class CanvasView(tk.Frame):
             else:
                 dp_mbar = pa_to_bar(comp.dp_pa) * 1000
                 overlay = f"Q={q_lpm:.1f}L/min  ΔP={dp_mbar:.0f}mb"
-            c.create_rectangle(x + 1, y + h - 18, x + w - 1, y + h - 1,
+            c.create_rectangle(x + 1, y + h - 14, x + w - 1, y + h - 1,
                                 fill='#1A252F', outline='', tags=tags)
-            c.create_text(x + w // 2, y + h - 9,
+            c.create_text(x + w // 2, y + h - 7,
                            text=overlay, fill='#F0F3F4',
-                           font=('Arial', 8), justify='center', tags=tags)
+                           font=('Arial', 6), justify='center', tags=tags)
 
         if tag:
             self._tag_map[tag] = comp
@@ -1158,7 +1160,7 @@ class CanvasView(tk.Frame):
         rect = c.create_rectangle(x, y, x + w, y + h,
                                    fill=fill, outline=outline,
                                    width=lwidth, tags=tags)
-        font = ('Arial', 10, 'bold') if bold else ('Arial', 10)
+        font = ('Arial', 8, 'bold') if bold else ('Arial', 8)
         txt  = c.create_text(x + w // 2, y + h // 2, text=text,
                               fill='white', font=font, justify='center',
                               tags=tags)
@@ -1203,8 +1205,8 @@ class WaterFlowApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("TATTOOS – Water Flow Network Simulator")
-        self.root.geometry("1440x960")
-        self.root.minsize(1100, 700)
+        self.root.geometry("1280x820")
+        self.root.minsize(900, 600)
 
         self.network  = HydroNetwork()
         self.sel_comp = None
@@ -1248,47 +1250,38 @@ class WaterFlowApp:
         self._build_toolbar(toolbar)
 
         # ── Main content ────────────────────────────────────────────────
-        pane = tk.PanedWindow(self.root, orient='vertical', sashwidth=6,
+        pane = tk.PanedWindow(self.root, orient='vertical', sashwidth=5,
                               sashrelief='raised')
         pane.pack(fill='both', expand=True)
 
-        upper = tk.PanedWindow(pane, orient='horizontal', sashwidth=6,
+        upper = tk.PanedWindow(pane, orient='horizontal', sashwidth=5,
                                sashrelief='raised')
-        pane.add(upper, minsize=400)
+        pane.add(upper, minsize=700)
 
         # Canvas (left, larger portion)
         self.canvas_view = CanvasView(upper, self._on_select,
                                       on_line_select=self._on_line_select)
-        upper.add(self.canvas_view, minsize=600)
+        upper.add(self.canvas_view, minsize=500)
 
         # Right side: branch selector + properties (narrower)
         right = tk.Frame(upper)
-        upper.add(right, minsize=260)
+        upper.add(right, minsize=240)
         self._build_right_panel(right)
 
         # Results table (bottom)
         self.results_panel = ResultsPanel(pane)
-        pane.add(self.results_panel, minsize=180)
-
-        # Configure ttk style for bigger Treeview font
-        style = ttk.Style()
-        style.configure('Treeview',      font=('Arial', 11), rowheight=26)
-        style.configure('Treeview.Heading', font=('Arial', 11, 'bold'))
+        pane.add(self.results_panel, minsize=160)
 
         # Set initial sash positions after window is drawn
         def _set_sash():
             try:
                 total_w = self.root.winfo_width()
-                total_h = self.root.winfo_height()
-                # Canvas takes 75 % of the window width; right panel gets 25 %
+                # Canvas takes 75 % of the window; right panel gets the remaining 25 %
                 sash_x = max(MIN_CANVAS_WIDTH, int(total_w * 0.75))
                 upper.sash_place(0, sash_x, 0)
-                # Upper pane takes 75 % of the total window height
-                sash_y = max(400, int(total_h * 0.75))
-                pane.sash_place(0, 0, sash_y)
             except Exception:
                 pass
-        self.root.after(150, _set_sash)
+        self.root.after(100, _set_sash)
 
     def _build_toolbar(self, parent):
         """Top toolbar with pump/tank settings and component buttons."""
@@ -1298,7 +1291,7 @@ class WaterFlowApp:
 
         # ── Pump settings ──────────────────────────────────────────────
         tk.Label(parent, text="  Pump:", bg='#2C3E50',
-                 fg='white', font=('Arial', 11, 'bold')).pack(side='left')
+                 fg='white', font=('Arial', 9, 'bold')).pack(side='left')
 
         tk.Label(parent, text="P =", bg='#2C3E50', fg='#BDC3C7').pack(side='left', padx=(4, 0))
         self.v_pump_p = tk.DoubleVar(value=1.0)
@@ -1338,7 +1331,7 @@ class WaterFlowApp:
                        activebackground='#2C3E50',
                        command=self._hx_toggled).pack(side='left', padx=(4, 2))
         tk.Label(parent, text="(click HX box to edit)", bg='#2C3E50',
-                 fg='#7F8C8D', font=('Arial', 9, 'italic')).pack(side='left')
+                 fg='#7F8C8D', font=('Arial', 7, 'italic')).pack(side='left')
 
         sep()
 
@@ -1363,13 +1356,13 @@ class WaterFlowApp:
         tk.Button(parent, text="🗑 Delete",       bg='#C0392B', fg='white',
                   command=self._delete_selected,  **btn).pack(side='right', padx=4)
         tk.Button(parent, text="▶  Run Simulation",
-                  bg='#F39C12', fg='white', font=('Arial', 11, 'bold'),
+                  bg='#F39C12', fg='white', font=('Arial', 9, 'bold'),
                   command=self._run_sim,           **btn).pack(side='right', padx=8)
 
     def _build_right_panel(self, parent):
         """Branch selector list + properties panel."""
         tk.Label(parent, text="Parallel Branches",
-                 font=('Arial', 11, 'bold'), bg='#2C3E50',
+                 font=('Arial', 9, 'bold'), bg='#2C3E50',
                  fg='white').pack(fill='x')
 
         # Branch listbox
@@ -1377,7 +1370,7 @@ class WaterFlowApp:
         lf.pack(fill='x', padx=4, pady=(4, 0))
         sb = ttk.Scrollbar(lf, orient='vertical')
         self.branch_lb = tk.Listbox(lf, height=5, yscrollcommand=sb.set,
-                                    selectmode='single', font=('Arial', 11))
+                                    selectmode='single', font=('Arial', 9))
         sb.config(command=self.branch_lb.yview)
         self.branch_lb.pack(side='left', fill='x', expand=True)
         sb.pack(side='right', fill='y')
