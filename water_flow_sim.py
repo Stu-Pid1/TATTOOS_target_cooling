@@ -18,8 +18,9 @@ Usage:
     python water_flow_sim.py
 """
 
+import json
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 import math
 
 # ─── Physics constants ──────────────────────────────────────────────────────
@@ -396,6 +397,111 @@ class HydroNetwork:
             'R_list':    R_list,
         }
 
+    def to_dict(self):
+        return {
+            'pump': {
+                'pbar': self.pump.pbar,
+                'qmax': self.pump.qmax,
+            },
+            'tank': {
+                'h_m': self.tank.h_m,
+                'vol': self.tank.vol,
+            },
+            'use_tank': self.use_tank,
+            'hx': {
+                'T_glycol_in':  self.hx.T_glycol_in,
+                'Q_glycol_lpm': self.hx.Q_glycol_lpm,
+                'UA':           self.hx.UA,
+                'dp_pa':        self.hx.dp_pa,
+            },
+            'use_hx': self.use_hx,
+            'branches': [
+                {
+                    'name': b.name,
+                    'comps': [self._comp_to_dict(c) for c in b.comps],
+                }
+                for b in self.branches
+            ],
+        }
+
+    @staticmethod
+    def _comp_to_dict(c):
+        base = {'kind': c.kind, 'label': c.label}
+        if isinstance(c, PipeComp):
+            base.update({'d_mm': c.d_mm, 'l_m': c.l_m})
+        elif isinstance(c, ValveComp):
+            base.update({'d_mm': c.d_mm, 'pct': c.pct})
+        elif isinstance(c, HeatSourceComp):
+            base.update({
+                'name': c.hname,
+                'Q_W': c.Q_W,
+                'dp_pa': c.dp_ref,
+                'qref_lpm': c.qref_lpm,
+            })
+        elif isinstance(c, DeviceComp):
+            base.update({
+                'name': c.dname,
+                'dp_pa': c.dp_ref,
+                'qref_lpm': c.qref_lpm,
+            })
+        return base
+
+    def load_dict(self, data):
+        self.pump.pbar = float(data.get('pump', {}).get('pbar', self.pump.pbar))
+        self.pump.qmax = float(data.get('pump', {}).get('qmax', self.pump.qmax))
+        self.tank.h_m  = float(data.get('tank', {}).get('h_m', self.tank.h_m))
+        self.tank.vol  = float(data.get('tank', {}).get('vol', self.tank.vol))
+        self.use_tank  = bool(data.get('use_tank', self.use_tank))
+        hx_data = data.get('hx', {})
+        self.hx.T_glycol_in  = float(hx_data.get('T_glycol_in', self.hx.T_glycol_in))
+        self.hx.Q_glycol_lpm = float(hx_data.get('Q_glycol_lpm', self.hx.Q_glycol_lpm))
+        self.hx.UA           = float(hx_data.get('UA', self.hx.UA))
+        self.hx.dp_pa        = float(hx_data.get('dp_pa', self.hx.dp_pa))
+        self.use_hx = bool(data.get('use_hx', self.use_hx))
+
+        branches = []
+        for bdata in data.get('branches', []):
+            b = Branch()
+            b.name = bdata.get('name', b.name)
+            for cdata in bdata.get('comps', []):
+                comp = self._comp_from_dict(cdata)
+                b.comps.append(comp)
+            if not b.comps:
+                b.comps.append(PipeComp())
+            branches.append(b)
+
+        if branches:
+            self.branches = branches
+        else:
+            self.branches = [Branch()]
+            self.branches[0].comps.append(PipeComp())
+
+    @staticmethod
+    def _comp_from_dict(data):
+        kind = data.get('kind', 'pipe')
+        if kind == 'pipe':
+            return PipeComp(d_mm=data.get('d_mm', 15.0), l_m=data.get('l_m', 1.0))
+        if kind == 'valve':
+            return ValveComp(d_mm=data.get('d_mm', 15.0), pct=data.get('pct', 100.0))
+        if kind == 'heatsource':
+            comp = HeatSourceComp(
+                name=data.get('name', data.get('label', 'Heat Source')),
+                Q_W=data.get('Q_W', 100.0),
+                dp_pa=data.get('dp_pa', 500.0),
+                qref_lpm=data.get('qref_lpm', 5.0),
+            )
+            comp.label = data.get('label', comp.label)
+            return comp
+        if kind == 'device':
+            comp = DeviceComp(
+                name=data.get('name', data.get('label', 'Device')),
+                dp_pa=data.get('dp_pa', 5000.0),
+                qref_lpm=data.get('qref_lpm', 5.0),
+            )
+            comp.label = data.get('label', comp.label)
+            return comp
+        return PipeComp()
+
     def _thermal_solve(self, Q_total_m3s, Q_list):
         """
         Steady-state temperature calculation.
@@ -555,6 +661,7 @@ class PropertiesPanel(tk.Frame):
             e = tk.Entry(self.inner, textvariable=var, width=14,
                          relief='solid', bd=1, font=('Arial', 9))
             e.grid(row=row, column=1, sticky='ew', pady=3, padx=(4, 0))
+            e.bind('<Return>', lambda event: self._apply())
             tk.Label(self.inner, text=unit, bg='#ECF0F1',
                      font=('Arial', 9)).grid(row=row, column=2, sticky='w', padx=4)
             self._vars[fname] = (var, ftype)
@@ -1075,12 +1182,26 @@ class CanvasView(tk.Frame):
         # ── Branch flow indicator badge ───────────────────────────────────────
         q_lpm = m3s_to_lpm(branch.comps[0].q_m3s) if branch.comps else 0.0
         if q_lpm > 0.001:
-            badge_x = (bus_right - 52) if has_siblings else (ret_x - 56)
-            bw, bh = 52, 18
+            lines = [f"▶ {q_lpm:.2f} L/min"]
+            if branch.comps:
+                last_temp = branch.comps[-1].T_out
+                if last_temp is not None and last_temp > 0.0:
+                    lines.append(f"T={last_temp:.1f}°C")
+                vel = None
+                for comp in branch.comps:
+                    v = comp.velocity()
+                    if v > 0.0:
+                        vel = v
+                        break
+                if vel is not None:
+                    lines.append(f"v={vel:.2f} m/s")
+            bw = 90
+            bh = 18 + 10 * (len(lines) - 1)
+            badge_x = (bus_right - bw) if has_siblings else (ret_x - bw)
             c.create_rectangle(badge_x, by - bh - 2, badge_x + bw, by - 2,
                                 fill='#1A5276', outline='#5DADE2', width=1)
             c.create_text(badge_x + bw // 2, by - bh // 2 - 2,
-                          text=f"▶ {q_lpm:.2f} L/min",
+                          text='\n'.join(lines),
                           fill='#AED6F1', font=('Arial', 7, 'bold'),
                           justify='center')
 
@@ -1114,11 +1235,16 @@ class CanvasView(tk.Frame):
         outline = '#F39C12' if selected else '#2C3E50'
         lwidth  = 3 if selected else 1
 
-        # Colour: grey if no flow yet, else component colour
+        # Colour always uses the component palette, with a lighter outline if there is no flow yet.
         q_lpm = m3s_to_lpm(comp.q_m3s)
-        fill  = '#BDC3C7' if comp.q_m3s == 0.0 else comp.COLOR
+        fill  = comp.COLOR
+        outline = '#F39C12' if selected else ('#BDC3C7' if comp.q_m3s == 0.0 else '#2C3E50')
+        lwidth  = 3 if selected else 1
 
         tags = (tag,)
+        rect = c.create_rectangle(x, y, x + w, y + h,
+                                   fill=fill, outline=outline,
+                                   width=lwidth, tags=tags)
         rect = c.create_rectangle(x, y, x + w, y + h,
                                    fill=fill, outline=outline,
                                    width=lwidth, tags=tags)
@@ -1134,6 +1260,9 @@ class CanvasView(tk.Frame):
             if isinstance(comp, HeatSourceComp) and comp.T_out > 0.0:
                 # Show flow + outlet temperature for heat sources
                 overlay = f"Q={q_lpm:.1f}L/min  T_out={comp.T_out:.1f}°C"
+            elif isinstance(comp, (PipeComp, ValveComp)):
+                vel = comp.velocity()
+                overlay = f"Q={q_lpm:.1f}L/min  v={vel:.2f} m/s"
             else:
                 dp_mbar = pa_to_bar(comp.dp_pa) * 1000
                 overlay = f"Q={q_lpm:.1f}L/min  ΔP={dp_mbar:.0f}mb"
@@ -1353,6 +1482,10 @@ class WaterFlowApp:
                   command=self._remove_branch, **btn).pack(side='left', padx=2)
 
         # ── Delete / Run ────────────────────────────────────────────────
+        tk.Button(parent, text="Save Config", bg='#3498DB', fg='white',
+                  command=self._save_config, **btn).pack(side='right', padx=2)
+        tk.Button(parent, text="Load Config", bg='#1ABC9C', fg='white',
+                  command=self._load_config, **btn).pack(side='right', padx=2)
         tk.Button(parent, text="🗑 Delete",       bg='#C0392B', fg='white',
                   command=self._delete_selected,  **btn).pack(side='right', padx=4)
         tk.Button(parent, text="▶  Run Simulation",
@@ -1375,6 +1508,7 @@ class WaterFlowApp:
         self.branch_lb.pack(side='left', fill='x', expand=True)
         sb.pack(side='right', fill='y')
         self.branch_lb.bind('<<ListboxSelect>>', self._on_branch_select)
+        self.branch_lb.bind('<Double-Button-1>', self._on_branch_rename)
 
         # Properties panel
         self.props = PropertiesPanel(parent, self._on_apply)
@@ -1427,6 +1561,22 @@ class WaterFlowApp:
         if idxs:
             self.sel_branch = self.network.branches[idxs[0]]
         self._refresh()
+
+    def _on_branch_rename(self, _event=None):
+        idxs = self.branch_lb.curselection()
+        if not idxs:
+            return
+        branch = self.network.branches[idxs[0]]
+        new_name = simpledialog.askstring('Rename Branch',
+                                          'Branch name:',
+                                          initialvalue=branch.name,
+                                          parent=self.root)
+        if new_name is None:
+            return
+        new_name = new_name.strip()
+        if new_name:
+            branch.name = new_name
+            self._refresh()
 
     def _pump_changed(self):
         try:
@@ -1511,6 +1661,47 @@ class WaterFlowApp:
         # Refresh properties panel result string
         self.props.refresh_results(self.sel_comp)
         self._refresh(run=True)
+
+    def _save_config(self):
+        path = filedialog.asksaveasfilename(
+            title='Save configuration',
+            defaultextension='.json',
+            filetypes=[('JSON Files', '*.json'), ('All Files', '*.*')]
+        )
+        if not path:
+            return
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(self.network.to_dict(), f, indent=2)
+            messagebox.showinfo('Saved configuration', f'Saved configuration to:\n{path}')
+        except Exception as exc:
+            messagebox.showerror('Save failed', f'Could not save configuration:\n{exc}')
+
+    def _load_config(self):
+        path = filedialog.askopenfilename(
+            title='Load configuration',
+            filetypes=[('JSON Files', '*.json'), ('All Files', '*.*')]
+        )
+        if not path:
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            self.network.load_dict(data)
+            self.sel_comp = None
+            self.sel_line = None
+            self.sel_branch = self.network.branches[0]
+            self.props.load(None)
+            self.v_pump_p.set(self.network.pump.pbar)
+            self.v_pump_q.set(self.network.pump.qmax)
+            self.v_tank_h.set(self.network.tank.h_m)
+            self.v_use_tank.set(self.network.use_tank)
+            self.v_use_hx.set(self.network.use_hx)
+            self._refresh()
+            self._run_sim()
+            messagebox.showinfo('Loaded configuration', f'Loaded configuration from:\n{path}')
+        except Exception as exc:
+            messagebox.showerror('Load failed', f'Could not load configuration:\n{exc}')
 
     # ── Internal helpers ────────────────────────────────────────────────────
 
